@@ -27,6 +27,12 @@
 python -m pip install laya
 ```
 
+Or install directly from this repository fork with the latest upstream bugfixes and enhancements:
+
+```bash
+python -m pip install "git+https://github.com/binhminhanh1235/laya-s1-decision.git#egg=laya[serve,mcp]"
+```
+
 Python 3.10 or newer. Optional extras: `laya[serve]` (HTTP server), `laya[mcp]` (MCP server), `laya[langchain]` (LangChain and LangGraph), `laya[onnx]` (ONNX Runtime), `laya[fast]` (TileLang GPU fast path). Step-by-step setup for each platform, CPU-only or GPU PyTorch builds, and troubleshooting are in [Installation details](#installation-details).
 
 **Long documents.** `laya-multilingual` reads up to 8,192 tokens with `max_len=8192`. Measured accuracy and time by document length, reproducible with [`research/scripts/bench_long_context.py`](https://github.com/NandhaKishorM/laya/blob/main/research/scripts/bench_long_context.py):
@@ -470,6 +476,13 @@ Three things differ from Jev when you port a client:
 * **Options per question.** A question's options share the checkpoint's option budget, `head_max_len` (192 tokens on `laya`, 256 on the other two), not Jev's cap of 255 options. Once they overflow it, around 20 options with a short description each, every option is trimmed to fit, so long or similar labels can reach the model reading the same ([Where Jev leads](#where-jev-leads)). Once they no longer fit the window at all, the request is rejected with 422. With short labels such as `Queue 042: Tickets routed to queue 42` that happens above 126 options on `laya` and 254 on the other two; the exact point moves with the length of the instructions and labels. For more candidates, narrow them first with `predict_shortlist` ([Honest limits](#honest-limits)).
 * **Score levels.** Every level needs a description. A `null` level is rejected with 422 rather than scored and echoed back in `legend`.
 * **`confidence`** on `choice` and `score` answers is 1 minus normalised entropy, a measure of how concentrated the distribution is, not Jev's `(n·p_max − 1)/(n − 1)`. A threshold carried over from Jev does not transfer. For one calibrated number on every question type, gate on `answer_confidence`, the probability of the reported answer.
+
+### Kaggle Server Deployment (with Ngrok)
+
+Pre-configured, zero-setup notebooks to deploy `laya.serve` on Kaggle and expose a public endpoint via Ngrok:
+
+* **[`notebooks/laya_kaggle_cpu_ngrok.ipynb`](notebooks/laya_kaggle_cpu_ngrok.ipynb)**: Runs Laya Server on Kaggle CPU (saves your 30h/week GPU quota) with `LAYA_DEVICE=cpu`, `LAYA_MODELS=multilingual`, and `LAYA_MAX_LOADED=1`.
+* **[`notebooks/laya_kaggle_ngrok.ipynb`](notebooks/laya_kaggle_ngrok.ipynb)**: Runs Laya Server with GPU acceleration (T4/P100), preloading the multilingual checkpoint for low latency.
 
 ### Nix / NixOS
 
