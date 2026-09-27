@@ -30,6 +30,8 @@ env var                 meaning                                        default
 ``LAYA_LOG_LEVEL``      uvicorn log level                              info
 ``LAYA_MAX_CONCURRENT`` cap on requests past auth at once; excess      16
                         gets 503 (see below)
+``LAYA_SERVE_MCP``      mount MCP endpoints (/sse, /mcp/sse) when      1
+                        laya[mcp] is installed
 ======================  ============================================  =========
 
 ``LAYA_DEVICE`` is a preference, not a guarantee: an ``Agent`` that asks for a
@@ -487,6 +489,48 @@ def create_app(router: Optional[Any] = None):
             # and has to be reproduced in-process to be diagnosed at all.
             _log.exception("inference failed for model=%s", model)
             raise HTTPException(status_code=500, detail="inference failed")
+
+    if _env_bool("LAYA_SERVE_MCP", True):
+        try:
+            import mcp  # noqa: F401
+            from fastapi.responses import RedirectResponse
+
+            import laya.mcp.server as _mcp_mod
+            from .mcp.server import server as mcp_server
+
+            # Share the preloaded resident router with MCP tools
+            _mcp_mod._ROUTER = router
+
+            # Disable DNS rebinding checks on mcp server settings if present,
+            # so reverse proxies/tunnels (ngrok, cloudflare) are not blocked.
+            if hasattr(mcp_server, "settings") and hasattr(mcp_server.settings, "transport_security"):
+                try:
+                    mcp_server.settings.transport_security.enable_dns_rebinding_protection = False
+                except Exception:
+                    pass
+
+            if hasattr(mcp_server, "sse_app"):
+                kwargs = {}
+                try:
+                    from mcp.server.transport_security import TransportSecuritySettings
+
+                    kwargs["transport_security"] = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+                except Exception:
+                    pass
+                try:
+                    mcp_sse = mcp_server.sse_app(**kwargs)
+                except TypeError:
+                    mcp_sse = mcp_server.sse_app()
+
+                @app.get("/mcp")
+                def _mcp_redirect():
+                    return RedirectResponse(url="/mcp/sse", status_code=307)
+
+                app.mount("/mcp", mcp_sse)
+                app.mount("/", mcp_sse)
+            _log.info("MCP endpoints mounted (/sse, /mcp/sse)")
+        except (ImportError, Exception) as exc:
+            _log.debug("MCP endpoints not mounted: %s", exc)
 
     return app
 

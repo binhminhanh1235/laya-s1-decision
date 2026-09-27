@@ -831,3 +831,35 @@ def test_a_deeply_nested_state_is_not_a_recursion_error():
         res = client.post("/v1/systemone", content=body,
                           headers={"content-type": "application/json"})
         assert res.status_code == 200, (depth, res.status_code, res.text)
+
+
+def test_serve_mounts_mcp_when_available(monkeypatch):
+    """When mcp extra is present and LAYA_SERVE_MCP is not 0, /sse and /mcp/sse are mounted."""
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("LAYA_SERVE_MCP", "1")
+    app = create_app(router=FakeRouter())
+    client = TestClient(app, follow_redirects=False)
+
+    # /mcp redirects to /mcp/sse
+    r_mcp = client.get("/mcp")
+    assert r_mcp.status_code == 307
+    assert r_mcp.headers["location"] == "/mcp/sse"
+
+    # Verify mounted paths in app.routes
+    mount_paths = [getattr(r, "path", None) for r in app.routes if type(r).__name__ == "Mount"]
+    assert "/mcp" in mount_paths
+    assert "" in mount_paths
+
+
+def test_serve_disables_mcp_when_env_zero(monkeypatch):
+    """Setting LAYA_SERVE_MCP=0 disables mounting MCP endpoints."""
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("LAYA_SERVE_MCP", "0")
+    app = create_app(router=FakeRouter())
+    client = TestClient(app, follow_redirects=False)
+    assert client.get("/mcp").status_code == 404
+    assert client.get("/health").status_code == 200
+    mount_paths = [getattr(r, "path", None) for r in app.routes if type(r).__name__ == "Mount"]
+    assert "/mcp" not in mount_paths
+    assert "" not in mount_paths
+

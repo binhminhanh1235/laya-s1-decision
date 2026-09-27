@@ -29,11 +29,15 @@ from typing import Any
 try:
     from mcp.server.mcpserver import MCPServer
     from mcp.server.mcpserver.exceptions import ToolError as McpToolError
-except ImportError as exc:  # mcp extra not installed
-    raise ImportError(
-        "the laya[mcp] extra (mcp>=2.2.0) is required to run the MCP server: "
-        "pip install 'laya[mcp]'"
-    ) from exc
+except ImportError:
+    try:
+        from mcp.server.fastmcp import FastMCP as MCPServer
+        from mcp.server.fastmcp.exceptions import ToolError as McpToolError
+    except ImportError as exc:  # mcp extra not installed
+        raise ImportError(
+            "the laya[mcp] extra (mcp>=2.2.0) is required to run the MCP server: "
+            "pip install 'laya[mcp]'"
+        ) from exc
 
 # laya.serve only imports os/typing at module level, so reusing its helpers
 # keeps one meaning for LAYA_PRELOAD / LAYA_THREADS across the package.
@@ -57,7 +61,10 @@ except Exception:  # running from a source checkout without install metadata
 
     _LAYA_VERSION = getattr(_laya, "__version__", "")
 
-server = MCPServer("laya", version=_LAYA_VERSION)
+try:
+    server = MCPServer("laya", version=_LAYA_VERSION)
+except TypeError:
+    server = MCPServer("laya")
 
 _ROUTER: Any = None
 _ROUTER_LOCK = threading.Lock()
@@ -368,7 +375,33 @@ def main() -> None:
             _ensure_router()
         except Exception as exc:
             print(f"[laya-mcp] preload failed (will retry on demand): {exc}", file=sys.stderr)
-    server.run()
+
+    transport = os.environ.get("LAYA_MCP_TRANSPORT", "stdio").strip().lower()
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg in ("--sse", "-s"):
+            transport = "sse"
+        elif arg.startswith("--transport="):
+            transport = arg.split("=", 1)[1].strip().lower()
+        elif arg == "--transport" and i < len(sys.argv) - 1:
+            transport = sys.argv[i + 1].strip().lower()
+
+    if transport in ("sse", "streamable-http"):
+        host = os.environ.get("LAYA_HOST", "0.0.0.0")
+        try:
+            port = int(os.environ.get("LAYA_PORT", "8000"))
+        except ValueError:
+            port = 8000
+        if hasattr(server, "settings") and hasattr(server.settings, "transport_security"):
+            try:
+                server.settings.transport_security.enable_dns_rebinding_protection = False
+            except Exception:
+                pass
+        try:
+            server.run(transport=transport, host=host, port=port)
+        except TypeError:
+            server.run(transport=transport)
+    else:
+        server.run()
 
 
 if __name__ == "__main__":
