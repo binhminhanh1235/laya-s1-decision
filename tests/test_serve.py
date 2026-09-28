@@ -863,3 +863,42 @@ def test_serve_disables_mcp_when_env_zero(monkeypatch):
     assert "/mcp" not in mount_paths
     assert "" not in mount_paths
 
+
+def test_serve_mcp_streamable_http_and_head(monkeypatch):
+    """MCP endpoints answer HEAD with 200 and accept POST for Streamable HTTP clients."""
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("LAYA_SERVE_MCP", "1")
+    app = create_app(router=FakeRouter())
+
+    with TestClient(app) as client:
+        # HEAD probes (used by Gemini Spark and health checkers)
+        assert client.head("/sse").status_code == 200
+        assert client.head("/mcp").status_code == 200
+        assert client.head("/").status_code == 200
+
+        # CORS preflight
+        r_opt = client.options("/sse", headers={
+            "Origin": "https://gemini.google.com",
+            "Access-Control-Request-Method": "POST",
+        })
+        assert r_opt.status_code == 200
+
+        # Streamable HTTP initialize POST
+        init_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "gemini-spark", "version": "1.0"},
+            },
+        }
+        headers = {"content-type": "application/json", "accept": "application/json, text/event-stream"}
+
+        for path in ("/sse", "/mcp", "/"):
+            r_post = client.post(path, json=init_payload, headers=headers)
+            assert r_post.status_code == 200, (path, r_post.status_code, r_post.text)
+            assert "jsonrpc" in r_post.text
+
+

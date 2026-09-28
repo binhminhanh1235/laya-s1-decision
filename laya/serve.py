@@ -346,23 +346,50 @@ def create_app(router: Optional[Any] = None):
     # body byte is read and held through inference, so the bodies buffered at
     # once stay bounded no matter how many clients connect (#330). The inference
     # gate is still joined only after the body is complete, so a slow client
-    # holds an admission slot but never an inference slot.
     max_concurrent = _resolve_max_concurrent()
     admission: Optional[asyncio.Semaphore] = None
+    mcp_server_ref: Optional[Any] = None
+
+    def _get_mcp_session_manager(server_obj: Any) -> Any:
+        sm = getattr(server_obj, "_session_manager", None)
+        if sm is None or (getattr(sm, "_has_started", False) and getattr(sm, "_task_group", None) is None):
+            server_obj._session_manager = None
+            server_obj.streamable_http_app()
+        return getattr(server_obj, "session_manager", None)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        try:
-            yield
-        finally:
-            # TestClient, embedded ASGI apps, and process supervisors all need
-            # the executor to drain when the app stops.
-            pool.shutdown(wait=True, cancel_futures=True)
+        import contextlib
+        exit_stack = contextlib.AsyncExitStack()
+        async with exit_stack:
+            if mcp_server_ref is not None and hasattr(mcp_server_ref, "streamable_http_app"):
+                try:
+                    sm = _get_mcp_session_manager(mcp_server_ref)
+                    if sm is not None and hasattr(sm, "run"):
+                        await exit_stack.enter_async_context(sm.run())
+                except Exception as exc:
+                    _log.debug("MCP session manager lifespan error: %s", exc)
+            try:
+                yield
+            finally:
+                # TestClient, embedded ASGI apps, and process supervisors all need
+                # the executor to drain when the app stops.
+                pool.shutdown(wait=True, cancel_futures=True)
 
     app = FastAPI(
         title="laya-serve",
         summary="Laya System-1 decisions over the TypeSafe Jev /v1/systemone protocol",
         lifespan=lifespan,
+    )
+
+    from starlette.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Compared as bytes, not str. `hmac.compare_digest` raises TypeError when a str
@@ -500,6 +527,7 @@ def create_app(router: Optional[Any] = None):
 
             # Share the preloaded resident router with MCP tools
             _mcp_mod._ROUTER = router
+            mcp_server_ref = mcp_server
 
             # Disable DNS rebinding checks on mcp server settings if present,
             # so reverse proxies/tunnels (ngrok, cloudflare) are not blocked.
@@ -508,6 +536,32 @@ def create_app(router: Optional[Any] = None):
                     mcp_server.settings.transport_security.enable_dns_rebinding_protection = False
                 except Exception:
                     pass
+
+            if hasattr(mcp_server, "streamable_http_app"):
+                try:
+                    from starlette.responses import Response
+                    from starlette.routing import Route
+                    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+
+                    _get_mcp_session_manager(mcp_server)
+
+                    class _StreamHandler:
+                        def __init__(self, srv: Any) -> None:
+                            self.srv = srv
+
+                        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+                            if scope.get("type") == "http" and scope.get("method") in ("HEAD", "OPTIONS"):
+                                resp = Response(status_code=200)
+                                await resp(scope, receive, send)
+                                return
+                            sm = _get_mcp_session_manager(self.srv)
+                            await StreamableHTTPASGIApp(sm)(scope, receive, send)
+
+                    stream_handler = _StreamHandler(mcp_server)
+                    for path in ("/sse", "/mcp/sse", "/mcp", "/"):
+                        app.router.routes.append(Route(path, endpoint=stream_handler, methods=["POST", "HEAD"]))
+                except Exception as exc:
+                    _log.debug("Streamable HTTP route setup failed: %s", exc)
 
             if hasattr(mcp_server, "sse_app"):
                 kwargs = {}
@@ -528,7 +582,7 @@ def create_app(router: Optional[Any] = None):
 
                 app.mount("/mcp", mcp_sse)
                 app.mount("/", mcp_sse)
-            _log.info("MCP endpoints mounted (/sse, /mcp/sse)")
+            _log.info("MCP endpoints mounted (/sse, /mcp/sse, /mcp)")
         except (ImportError, Exception) as exc:
             _log.debug("MCP endpoints not mounted: %s", exc)
 
