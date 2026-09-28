@@ -240,8 +240,23 @@ def _apply_rope_config(ecfg) -> None:
             setattr(ecfg, attr, float(theta))
 
 
+def _shield_broken_torchvision() -> None:
+    """Protect against environments (e.g. Kaggle/Colab) where a broken torchvision build
+    crashes transformers with `RuntimeError: operator torchvision::nms does not exist`."""
+    import sys
+
+    if sys.modules.get("torchvision") is None and "torchvision" in sys.modules:
+        return
+    try:
+        import torchvision  # noqa: F401
+    except (RuntimeError, Exception):
+        for mod in ("torchvision", "torchvision.io", "torchvision.transforms", "torchvision.ops"):
+            sys.modules[mod] = None
+
+
 def _no_init_weights():
     """`no_init_weights` lives in different modules across transformers versions."""
+    _shield_broken_torchvision()
     try:
         from transformers.initialization import no_init_weights
     except ImportError:  # transformers 4.x
@@ -258,6 +273,7 @@ def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool =
     into the result with `load_state_dict(..., strict=True)` immediately. Skipping initialisation
     keeps `load()` from spending time on, or consuming RNG for, weights it is about to overwrite.
     """
+    _shield_broken_torchvision()
     from transformers import AutoConfig, AutoModel
 
     head_layers, n_act = cfg.get("head_layers", 2), len(cfg.get("act_costs", {})) + 1

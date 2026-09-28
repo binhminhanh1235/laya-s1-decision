@@ -242,6 +242,25 @@ cpu_disabled._infer(batch)
 check("amp-context/_infer disabled completes", True, True)
 
 
+# ------------------------------------------------------------------ torchvision shield
+from unittest.mock import patch
+from laya.common import _shield_broken_torchvision
+
+with patch.dict(sys.modules, clear=False):
+    orig_import = __import__
+    def mock_import(name, *args, **kwargs):
+        if name == "torchvision":
+            raise RuntimeError("operator torchvision::nms does not exist")
+        return orig_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=mock_import):
+        if "torchvision" in sys.modules:
+            del sys.modules["torchvision"]
+        _shield_broken_torchvision()
+        check("torchvision-shield/blocks broken torchvision", sys.modules.get("torchvision") is None, True)
+
+
+
 # ------------------------------------------------------------------ report
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
